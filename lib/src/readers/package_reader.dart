@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:archive/archive.dart';
 import 'package:dart2_constant/convert.dart' as convert;
@@ -20,90 +21,201 @@ import '../schema/opf/epub_spine_item_ref.dart';
 import '../schema/opf/epub_version.dart';
 
 class PackageReader {
-  static EpubGuide readGuide(xml.XmlElement guideNode) {
-    EpubGuide result = EpubGuide();
-    result.Items = List<EpubGuideReference>();
-    guideNode.children
-        .whereType<xml.XmlElement>()
-        .forEach((xml.XmlElement guideReferenceNode) {
-      if (guideReferenceNode.name.local.toLowerCase() == "reference") {
-        EpubGuideReference guideReference = EpubGuideReference();
-        guideReferenceNode.attributes
-            .forEach((xml.XmlAttribute guideReferenceNodeAttribute) {
-          String attributeValue = guideReferenceNodeAttribute.value;
-          switch (guideReferenceNodeAttribute.name.local.toLowerCase()) {
-            case "type":
-              guideReference.Type = attributeValue;
-              break;
-            case "title":
-              guideReference.Title = attributeValue;
-              break;
-            case "href":
-              guideReference.Href = attributeValue;
-              break;
-          }
-        });
-        if (guideReference.Type == null || guideReference.Type.isEmpty) {
-          throw Exception("Incorrect EPUB guide: item type is missing");
-        }
-        if (guideReference.Href == null || guideReference.Href.isEmpty) {
-          throw Exception("Incorrect EPUB guide: item href is missing");
-        }
-        result.Items.add(guideReference);
-      }
-    });
+  static Future<EpubPackage> readPackage(
+      Archive epubArchive, String rootFilePath) async {
+    ArchiveFile rootFileEntry = epubArchive.files.firstWhere(
+            (ArchiveFile testfile) => testfile.name == rootFilePath,
+        orElse: () => null);
+    if (rootFileEntry == null)
+      throw new Exception(
+          "EPUB parsing error: root file not found in archive.");
+    xml.XmlDocument containerDocument =
+    xml.parse(utf8.decode(rootFileEntry.content));
+    String opfNamespace = "http://www.idpf.org/2007/opf";
+    xml.XmlElement packageNode;
+    if (containerDocument
+        .findElements("package", namespace: opfNamespace)
+        .length >=
+        1) {
+      packageNode = containerDocument
+          .findElements("package", namespace: opfNamespace)
+          .firstWhere((xml.XmlElement elem) => elem != null);
+    } else {
+      packageNode = containerDocument
+          .findElements("package")
+          .firstWhere((xml.XmlElement elem) => elem != null);
+    }
+    EpubPackage result = new EpubPackage();
+    String epubVersionValue = packageNode.getAttribute("version");
+    if (epubVersionValue == "2.0")
+      result.Version = EpubVersion.Epub2;
+    else if (epubVersionValue == "3.0")
+      result.Version = EpubVersion.Epub3;
+    else
+      throw new Exception("Unsupported EPUB version: ${epubVersionValue}.");
+    xml.XmlElement metadataNode;
+    if (packageNode
+        .findElements("metadata", namespace: opfNamespace).length >= 1) {
+      metadataNode = packageNode
+          .findElements("metadata", namespace: opfNamespace)
+          .firstWhere((xml.XmlElement elem) => elem != null);
+    } else {
+      metadataNode = packageNode
+          .findElements("metadata")
+          .firstWhere((xml.XmlElement elem) => elem != null);
+    }
+    if (metadataNode == null)
+      throw new Exception(
+          "EPUB parsing error: metadata not found in the package.");
+    EpubMetadata metadata = readMetadata(metadataNode, result.Version);
+    result.Metadata = metadata;
+    xml.XmlElement manifestNode;
+    if (packageNode
+        .findElements("manifest", namespace: opfNamespace).length >= 1) {
+      manifestNode = packageNode
+          .findElements("manifest", namespace: opfNamespace)
+          .firstWhere((xml.XmlElement elem) => elem != null);
+    } else {
+      manifestNode = packageNode
+          .findElements("manifest")
+          .firstWhere((xml.XmlElement elem) => elem != null);
+    }
+    if (manifestNode == null)
+      throw new Exception(
+          "EPUB parsing error: manifest not found in the package.");
+    EpubManifest manifest = readManifest(manifestNode);
+    result.Manifest = manifest;
+
+    xml.XmlElement spineNode;
+    if (packageNode
+        .findElements("spine", namespace: opfNamespace).length >= 1) {
+      spineNode = packageNode
+          .findElements("spine", namespace: opfNamespace)
+          .firstWhere((xml.XmlElement elem) => elem != null);
+    } else {
+      spineNode = packageNode
+          .findElements("spine")
+          .firstWhere((xml.XmlElement elem) => elem != null);
+    }
+    if (spineNode == null)
+      throw new Exception(
+          "EPUB parsing error: spine not found in the package.");
+    EpubSpine spine = readSpine(spineNode);
+    result.Spine = spine;
+    xml.XmlElement guideNode;
+    if (packageNode
+        .findElements("guide", namespace: opfNamespace).length >= 1) {
+      guideNode = packageNode
+          .findElements("guide", namespace: opfNamespace)
+          .firstWhere((xml.XmlElement elem) => elem != null, orElse: () => null);
+    } else {
+      guideNode = packageNode
+          .findElements("guide")
+          .firstWhere((xml.XmlElement elem) => elem != null, orElse: () => null);
+    }
+    if (guideNode != null) {
+      EpubGuide guide = readGuide(guideNode);
+      result.Guide = guide;
+    }
     return result;
   }
 
-  static EpubManifest readManifest(xml.XmlElement manifestNode) {
-    EpubManifest result = EpubManifest();
-    result.Items = List<EpubManifestItem>();
-    manifestNode.children
-        .whereType<xml.XmlElement>()
-        .forEach((xml.XmlElement manifestItemNode) {
-      if (manifestItemNode.name.local.toLowerCase() == "item") {
-        EpubManifestItem manifestItem = EpubManifestItem();
-        manifestItemNode.attributes
-            .forEach((xml.XmlAttribute manifestItemNodeAttribute) {
-          String attributeValue = manifestItemNodeAttribute.value;
-          switch (manifestItemNodeAttribute.name.local.toLowerCase()) {
-            case "id":
-              manifestItem.Id = attributeValue;
-              break;
-            case "href":
-              manifestItem.Href = attributeValue;
-              break;
-            case "media-type":
-              manifestItem.MediaType = attributeValue;
-              break;
-            case "required-namespace":
-              manifestItem.RequiredNamespace = attributeValue;
-              break;
-            case "required-modules":
-              manifestItem.RequiredModules = attributeValue;
-              break;
-            case "fallback":
-              manifestItem.Fallback = attributeValue;
-              break;
-            case "fallback-style":
-              manifestItem.FallbackStyle = attributeValue;
-              break;
-          }
-        });
+  static EpubPackage readPackageSync(
+      Archive epubArchive, String rootFilePath) {
+    ArchiveFile rootFileEntry = epubArchive.files.firstWhere(
+        (ArchiveFile testfile) => testfile.name == rootFilePath,
+        orElse: () => null);
+    if (rootFileEntry == null)
+      throw new Exception(
+          "EPUB parsing error: root file not found in archive.");
+    xml.XmlDocument containerDocument =
+        xml.parse(utf8.decode(rootFileEntry.content));
+    String opfNamespace = "http://www.idpf.org/2007/opf";
+    xml.XmlElement packageNode;
+    if (containerDocument
+            .findElements("package", namespace: opfNamespace)
+            .length >=
+        1) {
+      packageNode = containerDocument
+          .findElements("package", namespace: opfNamespace)
+          .firstWhere((xml.XmlElement elem) => elem != null);
+    } else {
+      packageNode = containerDocument
+          .findElements("package")
+          .firstWhere((xml.XmlElement elem) => elem != null);
+    }
+    EpubPackage result = new EpubPackage();
+    String epubVersionValue = packageNode.getAttribute("version");
+    if (epubVersionValue == "2.0")
+      result.Version = EpubVersion.Epub2;
+    else if (epubVersionValue == "3.0")
+      result.Version = EpubVersion.Epub3;
+    else
+      throw new Exception("Unsupported EPUB version: ${epubVersionValue}.");
+    xml.XmlElement metadataNode;
+    if (packageNode
+        .findElements("metadata", namespace: opfNamespace).length >= 1) {
+      metadataNode = packageNode
+          .findElements("metadata", namespace: opfNamespace)
+          .firstWhere((xml.XmlElement elem) => elem != null);
+    } else {
+      metadataNode = packageNode
+          .findElements("metadata")
+          .firstWhere((xml.XmlElement elem) => elem != null);
+    }
+    if (metadataNode == null)
+      throw new Exception(
+          "EPUB parsing error: metadata not found in the package.");
+    EpubMetadata metadata = readMetadata(metadataNode, result.Version);
+    result.Metadata = metadata;
+    xml.XmlElement manifestNode;
+    if (packageNode
+        .findElements("manifest", namespace: opfNamespace).length >= 1) {
+      manifestNode = packageNode
+          .findElements("manifest", namespace: opfNamespace)
+          .firstWhere((xml.XmlElement elem) => elem != null);
+    } else {
+      manifestNode = packageNode
+          .findElements("manifest")
+          .firstWhere((xml.XmlElement elem) => elem != null);
+    }
+    if (manifestNode == null)
+      throw new Exception(
+          "EPUB parsing error: manifest not found in the package.");
+    EpubManifest manifest = readManifest(manifestNode);
+    result.Manifest = manifest;
 
-        if (manifestItem.Id == null || manifestItem.Id.isEmpty) {
-          throw Exception("Incorrect EPUB manifest: item ID is missing");
-        }
-        if (manifestItem.Href == null || manifestItem.Href.isEmpty) {
-          throw Exception("Incorrect EPUB manifest: item href is missing");
-        }
-        if (manifestItem.MediaType == null || manifestItem.MediaType.isEmpty) {
-          throw Exception(
-              "Incorrect EPUB manifest: item media type is missing");
-        }
-        result.Items.add(manifestItem);
-      }
-    });
+    xml.XmlElement spineNode;
+    if (packageNode
+        .findElements("spine", namespace: opfNamespace).length >= 1) {
+      spineNode = packageNode
+          .findElements("spine", namespace: opfNamespace)
+          .firstWhere((xml.XmlElement elem) => elem != null);
+    } else {
+      spineNode = packageNode
+          .findElements("spine")
+          .firstWhere((xml.XmlElement elem) => elem != null);
+    }
+    if (spineNode == null)
+      throw new Exception(
+          "EPUB parsing error: spine not found in the package.");
+    EpubSpine spine = readSpine(spineNode);
+    result.Spine = spine;
+    xml.XmlElement guideNode;
+    if (packageNode
+        .findElements("guide", namespace: opfNamespace).length >= 1) {
+      guideNode = packageNode
+          .findElements("guide", namespace: opfNamespace)
+          .firstWhere((xml.XmlElement elem) => elem != null, orElse: () => null);
+    } else {
+      guideNode = packageNode
+          .findElements("guide")
+          .firstWhere((xml.XmlElement elem) => elem != null, orElse: () => null);
+    }
+    if (guideNode != null) {
+      EpubGuide guide = readGuide(guideNode);
+      result.Guide = guide;
+    }
     return result;
   }
 
@@ -126,7 +238,8 @@ class PackageReader {
     result.Rights = List<String>();
     result.MetaItems = List<EpubMetadataMeta>();
     metadataNode.children
-        .whereType<xml.XmlElement>()
+        .where((xml.XmlNode node) => node is xml.XmlElement)
+        .map((xml.XmlNode node) => node as xml.XmlElement)
         .forEach((xml.XmlElement metadataItemNode) {
       String innerText = metadataItemNode.text;
       switch (metadataItemNode.name.local.toLowerCase()) {
@@ -306,61 +419,53 @@ class PackageReader {
     return result;
   }
 
-  static Future<EpubPackage> readPackage(
-      Archive epubArchive, String rootFilePath) async {
-    ArchiveFile rootFileEntry = epubArchive.files.firstWhere(
-        (ArchiveFile testfile) => testfile.name == rootFilePath,
-        orElse: () => null);
-    if (rootFileEntry == null) {
-      throw Exception("EPUB parsing error: root file not found in archive.");
-    }
-    xml.XmlDocument containerDocument =
-        xml.parse(convert.utf8.decode(rootFileEntry.content));
-    String opfNamespace = "http://www.idpf.org/2007/opf";
-    xml.XmlElement packageNode = containerDocument
-        .findElements("package", namespace: opfNamespace)
-        .firstWhere((xml.XmlElement elem) => elem != null);
-    EpubPackage result = EpubPackage();
-    String epubVersionValue = packageNode.getAttribute("version");
-    if (epubVersionValue == "2.0") {
-      result.Version = EpubVersion.Epub2;
-    } else if (epubVersionValue == "3.0") {
-      result.Version = EpubVersion.Epub3;
-    } else {
-      throw Exception("Unsupported EPUB version: ${epubVersionValue}.");
-    }
-    xml.XmlElement metadataNode = packageNode
-        .findElements("metadata", namespace: opfNamespace)
-        .firstWhere((xml.XmlElement elem) => elem != null);
-    if (metadataNode == null) {
-      throw Exception("EPUB parsing error: metadata not found in the package.");
-    }
-    EpubMetadata metadata = readMetadata(metadataNode, result.Version);
-    result.Metadata = metadata;
-    xml.XmlElement manifestNode = packageNode
-        .findElements("manifest", namespace: opfNamespace)
-        .firstWhere((xml.XmlElement elem) => elem != null);
-    if (manifestNode == null) {
-      throw Exception("EPUB parsing error: manifest not found in the package.");
-    }
-    EpubManifest manifest = readManifest(manifestNode);
-    result.Manifest = manifest;
+  static EpubManifest readManifest(xml.XmlElement manifestNode) {
+    EpubManifest result = new EpubManifest();
+    result.Items = new List<EpubManifestItem>();
+    manifestNode.children
+        .where((xml.XmlNode node) => node is xml.XmlElement)
+        .map((xml.XmlNode node) => node as xml.XmlElement)
+        .forEach((xml.XmlElement manifestItemNode) {
+      if (manifestItemNode.name.local.toLowerCase() == "item") {
+        EpubManifestItem manifestItem = new EpubManifestItem();
+        manifestItemNode.attributes
+            .forEach((xml.XmlAttribute manifestItemNodeAttribute) {
+          String attributeValue = manifestItemNodeAttribute.value;
+          switch (manifestItemNodeAttribute.name.local.toLowerCase()) {
+            case "id":
+              manifestItem.Id = attributeValue;
+              break;
+            case "href":
+              manifestItem.Href = attributeValue;
+              break;
+            case "media-type":
+              manifestItem.MediaType = attributeValue;
+              break;
+            case "required-namespace":
+              manifestItem.RequiredNamespace = attributeValue;
+              break;
+            case "required-modules":
+              manifestItem.RequiredModules = attributeValue;
+              break;
+            case "fallback":
+              manifestItem.Fallback = attributeValue;
+              break;
+            case "fallback-style":
+              manifestItem.FallbackStyle = attributeValue;
+              break;
+          }
+        });
 
-    xml.XmlElement spineNode = packageNode
-        .findElements("spine", namespace: opfNamespace)
-        .firstWhere((xml.XmlElement elem) => elem != null);
-    if (spineNode == null) {
-      throw Exception("EPUB parsing error: spine not found in the package.");
-    }
-    EpubSpine spine = readSpine(spineNode);
-    result.Spine = spine;
-    xml.XmlElement guideNode = packageNode
-        .findElements("guide", namespace: opfNamespace)
-        .firstWhere((xml.XmlElement elem) => elem != null, orElse: () => null);
-    if (guideNode != null) {
-      EpubGuide guide = readGuide(guideNode);
-      result.Guide = guide;
-    }
+        if (manifestItem.Id == null || manifestItem.Id.isEmpty)
+          throw new Exception("Incorrect EPUB manifest: item ID is missing");
+        if (manifestItem.Href == null || manifestItem.Href.isEmpty)
+          throw new Exception("Incorrect EPUB manifest: item href is missing");
+        if (manifestItem.MediaType == null || manifestItem.MediaType.isEmpty)
+          throw new Exception(
+              "Incorrect EPUB manifest: item media type is missing");
+        result.Items.add(manifestItem);
+      }
+    });
     return result;
   }
 
@@ -368,9 +473,12 @@ class PackageReader {
     EpubSpine result = EpubSpine();
     result.Items = List<EpubSpineItemRef>();
     String tocAttribute = spineNode.getAttribute("toc");
+    if (tocAttribute == null || tocAttribute.isEmpty)
+      throw new Exception("Incorrect EPUB spine: TOC is missing");
     result.TableOfContents = tocAttribute;
     spineNode.children
-        .whereType<xml.XmlElement>()
+        .where((xml.XmlNode node) => node is xml.XmlElement)
+        .map((xml.XmlNode node) => node as xml.XmlElement)
         .forEach((xml.XmlElement spineItemNode) {
       if (spineItemNode.name.local.toLowerCase() == "itemref") {
         EpubSpineItemRef spineItemRef = EpubSpineItemRef();
@@ -383,6 +491,40 @@ class PackageReader {
         spineItemRef.IsLinear =
             linearAttribute == null || (linearAttribute.toLowerCase() == "no");
         result.Items.add(spineItemRef);
+      }
+    });
+    return result;
+  }
+
+  static EpubGuide readGuide(xml.XmlElement guideNode) {
+    EpubGuide result = new EpubGuide();
+    result.Items = new List<EpubGuideReference>();
+    guideNode.children
+        .where((xml.XmlNode node) => node is xml.XmlElement)
+        .map((xml.XmlNode node) => node as xml.XmlElement)
+        .forEach((xml.XmlElement guideReferenceNode) {
+      if (guideReferenceNode.name.local.toLowerCase() == "reference") {
+        EpubGuideReference guideReference = new EpubGuideReference();
+        guideReferenceNode.attributes
+            .forEach((xml.XmlAttribute guideReferenceNodeAttribute) {
+          String attributeValue = guideReferenceNodeAttribute.value;
+          switch (guideReferenceNodeAttribute.name.local.toLowerCase()) {
+            case "type":
+              guideReference.Type = attributeValue;
+              break;
+            case "title":
+              guideReference.Title = attributeValue;
+              break;
+            case "href":
+              guideReference.Href = attributeValue;
+              break;
+          }
+        });
+        if (guideReference.Type == null || guideReference.Type.isEmpty)
+          throw new Exception("Incorrect EPUB guide: item type is missing");
+        if (guideReference.Href == null || guideReference.Href.isEmpty)
+          throw new Exception("Incorrect EPUB guide: item href is missing");
+        result.Items.add(guideReference);
       }
     });
     return result;

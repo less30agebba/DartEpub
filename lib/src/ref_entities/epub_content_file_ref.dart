@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:archive/archive.dart';
 import 'package:dart2_constant/convert.dart' as convert;
@@ -11,23 +12,33 @@ import 'epub_book_ref.dart';
 abstract class EpubContentFileRef {
   EpubBookRef epubBookRef;
 
+  EpubContentFileRef(EpubBookRef epubBookRef) {
+    this.epubBookRef = epubBookRef;
+  }
+
   String FileName;
 
   EpubContentType ContentType;
   String ContentMimeType;
-  EpubContentFileRef(EpubBookRef epubBookRef) {
-    this.epubBookRef = epubBookRef;
-  }
 
   @override
   int get hashCode =>
       hash3(FileName.hashCode, ContentMimeType.hashCode, ContentType.hashCode);
 
-  bool operator ==(other) {
-    return (other is EpubContentFileRef &&
-        other.FileName == FileName &&
-        other.ContentMimeType == ContentMimeType &&
-        other.ContentType == ContentType);
+  List<int> readContentAsBytesSync() {
+    ArchiveFile contentFileEntry = getContentFileEntry();
+    var content = openContentStream(contentFileEntry);
+    return content;
+  }
+
+  String readContentAsTextSync() {
+    List<int> contentStream = getContentStream();
+    String result = utf8.decode(contentStream);
+    return result;
+  }
+
+  List<int> getContentStream() {
+    return openContentStream(getContentFileEntry());
   }
 
   ArchiveFile getContentFileEntry() {
@@ -41,10 +52,6 @@ abstract class EpubContentFileRef {
           "EPUB parsing error: file ${contentFilePath} not found in archive.");
     }
     return contentFileEntry;
-  }
-
-  List<int> getContentStream() {
-    return openContentStream(getContentFileEntry());
   }
 
   List<int> openContentStream(ArchiveFile contentFileEntry) {

@@ -8,14 +8,14 @@ import 'epub_text_content_file_ref.dart';
 class EpubChapterRef {
   EpubTextContentFileRef epubTextContentFileRef;
 
+  EpubChapterRef(EpubTextContentFileRef epubTextContentFileRef) {
+    this.epubTextContentFileRef = epubTextContentFileRef;
+  }
+
   String Title;
   String ContentFileName;
   String Anchor;
   List<EpubChapterRef> SubChapters;
-
-  EpubChapterRef(EpubTextContentFileRef epubTextContentFileRef) {
-    this.epubTextContentFileRef = epubTextContentFileRef;
-  }
 
   @override
   int get hashCode => hashObjects([
@@ -36,6 +36,10 @@ class EpubChapterRef {
         Anchor == otherAs.Anchor &&
         epubTextContentFileRef == otherAs.epubTextContentFileRef &&
         collections.listsEqual(SubChapters, otherAs.SubChapters);
+  }
+
+  String readHtmlContentSync() {
+    return epubTextContentFileRef.readContentAsTextSync();
   }
 
   Future<String> readHtmlContent() async {
